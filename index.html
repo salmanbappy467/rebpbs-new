@@ -390,7 +390,7 @@ async function verifyMeterInInventory(meterNo, maxRetries = 3) {
                 action: 'LIST', 
                 userid: state.user.userid, 
                 password: state.user.password, 
-                limit: 50 // সর্বশেষ যুক্ত হওয়া মিটারগুলো প্রথমে থাকবে, তাই 50 ই যথেষ্ট
+                limit: 3 // সর্বশেষ যুক্ত হওয়া মিটারগুলো প্রথমে থাকবে, তাই 50 ই যথেষ্ট
             });
             
             if (result && result.data) {
