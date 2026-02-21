@@ -381,28 +381,77 @@ async function startPostingOneByOne() {
 }
 
 // আলাদা ফাংশন যা প্রতিটি মিটারের রেজাল্ট হ্যান্ডেল করবে
+// মিটার ইনভেন্টরিতে যুক্ত হয়েছে কিনা তা চেক করার ফাংশন
+async function verifyMeterInInventory(meterNo, maxRetries = 3) {
+    for (let i = 0; i < maxRetries; i++) {
+        try {
+            // ইনভেন্টরি লিস্ট রিকোয়েস্ট করা হচ্ছে
+            const result = await runTask({ 
+                action: 'LIST', 
+                userid: state.user.userid, 
+                password: state.user.password, 
+                limit: 50 // সর্বশেষ যুক্ত হওয়া মিটারগুলো প্রথমে থাকবে, তাই 50 ই যথেষ্ট
+            });
+            
+            if (result && result.data) {
+                // ব্যাকগ্রাউন্ডে হিস্ট্রি ক্যাশ আপডেট করে রাখা হচ্ছে 
+                updateHistoryCache(result.data);
+                
+                // মিটারটি লিস্টে আছে কিনা চেক করা
+                const isFound = result.data.find(m => m.meterNo === meterNo);
+                if (isFound) {
+                    return true; // মিটার পাওয়া গেছে
+                }
+            }
+        } catch (err) {
+            console.log("Verification check failed: ", err);
+        }
+        
+        // না পেলে ২ সেকেন্ড অপেক্ষা করে আবার চেক করবে
+        await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+    return false; // কয়েকবার চেক করার পরও পাওয়া যায়নি
+}
+
+// আলাদা ফাংশন যা প্রতিটি মিটারের রেজাল্ট হ্যান্ডেল করবে
 async function sendMeterData(item) {
     const st = item.row.querySelector('.status-cell');
-    st.innerHTML = '<span class="loader text-primary" style="width:12px;height:12px;"></span>';
+    const meterNo = item.data.meterNo;
+    
+    // পোস্টিং শুরু
+    st.innerHTML = '<span class="loader text-primary" style="width:12px;height:12px;"></span> <span class="text-[10px] ml-1">Posting...</span>';
+    st.className = "grid-cell status-cell text-xs font-bold text-primary";
     
     try {
         // সার্ভারে ডাটা পাঠানো হচ্ছে
-        const res = await runTask({ 
+        await runTask({ 
             action: 'FAST', 
             userid: state.user.userid, 
             password: state.user.password, 
             meters: [item.data] 
         });
         
-        st.innerHTML = '<i class="fa-solid fa-check"></i> Done';
-        st.className = "grid-cell status-cell text-xs font-bold text-green-500";
+        // পোস্টিং শেষ, এবার ভেরিফাই করা হচ্ছে
+        st.innerHTML = '<span class="loader text-yellow-500" style="width:12px;height:12px;"></span> <span class="text-[10px] ml-1 text-yellow-500">Verifying...</span>';
+        
+        const isVerified = await verifyMeterInInventory(meterNo, 10); // সর্বোচ্চ ৪ বার (৮ সেকেন্ড) চেক করবে
+
+        if (isVerified) {
+            st.innerHTML = '<i class="fa-solid fa-check"></i> Done';
+            st.className = "grid-cell status-cell text-xs font-bold text-green-500";
+        } else {
+            // লিস্টে না পেলে ফেইলড দেখাবে
+            st.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> Not Found';
+            st.className = "grid-cell status-cell text-xs font-bold text-red-500";
+            st.title = "Posted, but not found in inventory list yet.";
+        }
+        
     } catch (err) {
         st.innerText = "Error";
         st.className = "grid-cell status-cell text-xs font-bold text-red-500";
     }
     saveDraft();
 }
-
 
 
 
