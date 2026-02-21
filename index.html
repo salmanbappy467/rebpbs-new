@@ -384,9 +384,77 @@ async function startPostingOneByOne() {
 // মিটার ইনভেন্টরিতে যুক্ত হয়েছে কিনা তা চেক করার ফাংশন
 
 
+// ১. ইনভেন্টরি বা হিস্ট্রিতে মিটারটি আছে কিনা তা চেক করার মূল ফাংশন
+async function verifyMeterInHistory(meterNo) {
+    // ধাপ ১: প্রথমে লোকাল ক্যাশ (History Page এর ডাটা) চেক করবে
+    const localFound = state.history.find(m => m.meterNo === meterNo);
+    if (localFound) {
+        return true; // লোকাল হিস্ট্রিতে পাওয়া গেছে, তাই আর API কলের প্রয়োজন নেই
+    }
 
-        // ১. হিস্ট্রি পেজ থেকে ডাটা ফেচ এবং ক্যাশ আপডেট করার ফাংশন
-async function refreshHistory(limit = 3) {
+    // ধাপ ২: যদি লোকাল ক্যাশে না থাকে, তবে সার্ভার থেকে আপডেট করবে (সর্বোচ্চ ৩ বার ট্রাই)
+    for (let i = 0; i < 3; i++) {
+        // প্রতিবার ১০০ বা তার বেশি ডাটা ফেচ করে চেক করবে
+        const limit = 10 + (i * 50); 
+        const latestList = await refreshHistory(limit);
+        
+        if (latestList) {
+            const serverFound = latestList.find(m => m.meterNo === meterNo);
+            if (serverFound) return true; 
+        }
+        
+        // ২ সেকেন্ড অপেক্ষা করে আবার চেক (সার্ভার প্রসেসিং টাইমের জন্য)
+        await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+    return false;
+}
+
+// ২. মিটার ডেটা পাঠানোর মেইন ফাংশন
+async function sendMeterData(item) {
+    const st = item.row.querySelector('.status-cell');
+    const meterNo = item.data.meterNo;
+    
+    // প্রথমে চেক করে নিবে মিটারটি অলরেডি ইনভেন্টরিতে আছে কিনা
+    const alreadyExists = state.history.find(m => m.meterNo === meterNo);
+    if (alreadyExists) {
+        st.innerHTML = '<i class="fa-solid fa-check"></i> Done (Exist)';
+        st.className = "grid-cell status-cell text-green-500 font-bold";
+        return;
+    }
+
+    st.innerHTML = '<span class="loader text-primary"></span> <span class="text-[10px] ml-1">Posting...</span>';
+    st.className = "grid-cell status-cell text-primary font-bold";
+    
+    try {
+        // পোস্টিং রিকোয়েস্ট
+        await runTask({ 
+            action: 'FAST', 
+            userid: state.user.userid, 
+            password: state.user.password, 
+            meters: [item.data] 
+        });
+        
+        // ভেরিফিকেশন শুরু
+        st.innerHTML = '<span class="loader text-yellow-500"></span> <span class="text-[10px] ml-1 text-yellow-500">Verifying...</span>';
+        
+        const isVerified = await verifyMeterInHistory(meterNo);
+
+        if (isVerified) {
+            st.innerHTML = '<i class="fa-solid fa-check"></i> Done';
+            st.className = "grid-cell status-cell text-green-500 font-bold";
+        } else {
+            st.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> Not Found';
+            st.className = "grid-cell status-cell text-red-500 font-bold";
+        }
+    } catch (err) {
+        st.innerText = "Error";
+        st.className = "grid-cell status-cell text-red-500 font-bold";
+    }
+    saveDraft();
+}
+
+// ৩. হিস্ট্রি আপডেট ফাংশন (যা আপনার state.history কে রিফ্রেশ করবে)
+async function refreshHistory(limit = 100) {
     try {
         const result = await runTask({ 
             action: 'LIST', 
@@ -394,80 +462,15 @@ async function refreshHistory(limit = 3) {
             password: state.user.password, 
             limit: limit 
         });
-        
         if(result && result.data) {
-            // ইন্টারনাল হিস্ট্রি স্টেট আপডেট করা হচ্ছে
+            // নতুন ডাটা ক্যাশে যোগ করা এবং ডুপ্লিকেট রিমুভ করা
             state.history = [...result.data, ...state.history.filter(h => !result.data.find(n => n.meterNo === h.meterNo))].slice(0, 1000);
             localStorage.setItem('reb_history_cache', JSON.stringify(state.history));
-            
-            // যদি ইউজার হিস্ট্রি ট্যাবে থাকে তবে ভিউ আপডেট করবে
-            if (document.getElementById('view-history').classList.contains('hidden') === false) {
-                renderHistory();
-            }
+            renderHistory(); // হিস্ট্রি পেজ আপডেট
             return result.data;
         }
-    } catch(e) { 
-        console.error("History sync failed", e); 
-    }
+    } catch(e) { console.error("Sync failed", e); }
     return null;
-}
-
-// ২. ইনভেন্টরি বা হিস্ট্রিতে মিটারটি যুক্ত হয়েছে কিনা তা নিশ্চিত করার ফাংশন
-async function verifyMeterInHistory(meterNo, maxRetries = 5) {
-    for (let i = 0; i < maxRetries; i++) {
-        // প্রতিবার চেক করার সময় সার্ভার থেকে লেটেস্ট 3 ডাটা আনবে
-        const latestList = await refreshHistory(3);
-        
-        if (latestList) {
-            // হিস্ট্রিতে মিটারটি আছে কিনা চেক
-            const found = latestList.find(m => m.meterNo === meterNo);
-            if (found) return true; // মিটার পাওয়া গেছে!
-        }
-        
-        // মিটার না পাওয়া গেলে ২.৫ সেকেন্ড অপেক্ষা করে আবার চেষ্টা করবে
-        await new Promise(resolve => setTimeout(resolve, 2500));
-    }
-    return false; // নির্ধারিত সময়ের মধ্যে পাওয়া যায়নি
-}
-
-// ৩. মিটার ডেটা পাঠানোর মেইন ফাংশন (আপডেটেড)
-async function sendMeterData(item) {
-    const st = item.row.querySelector('.status-cell');
-    const meterNo = item.data.meterNo;
-    
-    // পোস্টিং শুরু
-    st.innerHTML = '<span class="loader text-primary"></span> <span class="text-[10px] ml-1">Posting...</span>';
-    st.className = "grid-cell status-cell text-primary font-bold";
-    
-    try {
-        // স্টেপ ১: সার্ভারে মিটার পোস্ট করা
-        const postResult = await runTask({ 
-            action: 'FAST', 
-            userid: state.user.userid, 
-            password: state.user.password, 
-            meters: [item.data] 
-        });
-        
-        // স্টেপ ২: ভেরিফিকেশন শুরু (হিস্ট্রি চেক)
-        st.innerHTML = '<span class="loader text-yellow-500"></span> <span class="text-[10px] ml-1 text-yellow-500">Verifying...</span>';
-        
-        const isVerified = await verifyMeterInHistory(meterNo);
-
-        if (isVerified) {
-            // ইনভেন্টরি লিস্টে পাওয়া গেলেই কেবল Done দেখাবে
-            st.innerHTML = '<i class="fa-solid fa-check"></i> Done';
-            st.className = "grid-cell status-cell text-green-500 font-bold";
-        } else {
-            // না পাওয়া গেলে লাল ওয়ার্নিং দেখাবে
-            st.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> Not In List';
-            st.className = "grid-cell status-cell text-red-500 font-bold";
-            st.title = "Meter posted but not found in inventory list after retries.";
-        }
-    } catch (err) {
-        st.innerText = "Error";
-        st.className = "grid-cell status-cell text-red-500 font-bold";
-    }
-    saveDraft();
 }
 
 
