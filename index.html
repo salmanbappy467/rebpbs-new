@@ -393,9 +393,9 @@ async function verifyMeterInHistory(meterNo) {
     }
 
     // ধাপ ২: যদি লোকাল ক্যাশে না থাকে, তবে সার্ভার থেকে আপডেট করবে (সর্বোচ্চ ৩ বার ট্রাই)
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 7; i++) {
         // প্রতিবার ১০০ বা তার বেশি ডাটা ফেচ করে চেক করবে
-        const limit = 10 + (i * 50); 
+        const limit = 3 + (i * 5); 
         const latestList = await refreshHistory(limit);
         
         if (latestList) {
@@ -454,7 +454,7 @@ async function sendMeterData(item) {
 }
 
 // ৩. হিস্ট্রি আপডেট ফাংশন (যা আপনার state.history কে রিফ্রেশ করবে)
-async function refreshHistory(limit = 100) {
+async function refreshHistory(limit = 3) {
     try {
         const result = await runTask({ 
             action: 'LIST', 
