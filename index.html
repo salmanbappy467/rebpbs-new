@@ -386,7 +386,7 @@ async function startPostingOneByOne() {
 
 
         // ১. হিস্ট্রি পেজ থেকে ডাটা ফেচ এবং ক্যাশ আপডেট করার ফাংশন
-async function refreshHistory(limit = 100) {
+async function refreshHistory(limit = 3) {
     try {
         const result = await runTask({ 
             action: 'LIST', 
@@ -415,8 +415,8 @@ async function refreshHistory(limit = 100) {
 // ২. ইনভেন্টরি বা হিস্ট্রিতে মিটারটি যুক্ত হয়েছে কিনা তা নিশ্চিত করার ফাংশন
 async function verifyMeterInHistory(meterNo, maxRetries = 5) {
     for (let i = 0; i < maxRetries; i++) {
-        // প্রতিবার চেক করার সময় সার্ভার থেকে লেটেস্ট ১০০ ডাটা আনবে
-        const latestList = await refreshHistory(100);
+        // প্রতিবার চেক করার সময় সার্ভার থেকে লেটেস্ট 3 ডাটা আনবে
+        const latestList = await refreshHistory(3);
         
         if (latestList) {
             // হিস্ট্রিতে মিটারটি আছে কিনা চেক
