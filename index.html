@@ -360,24 +360,52 @@ async function startPostingOneByOne() {
 
     setBtnLoading('postBtn', true, 'Posting...');
 
-    // ২. লুপের মাধ্যমে ১ সেকেন্ড পর পর রিকোয়েস্ট পাঠানো
+    // ২. ধাপ ১: দ্রুত সব মিটার পোস্ট করা
     for (let i = 0; i < queue.length; i++) {
         const item = queue[i];
-        
-        // এখানে রিকোয়েস্ট পাঠিয়ে দেওয়া হচ্ছে (await করা হচ্ছে না, তাই এটি ব্যাকগ্রাউন্ডে চলবে)
-        sendMeterData(item);
+        const st = item.row.querySelector('.status-cell');
+        st.innerHTML = '<span class="loader text-primary"></span> <span class="text-[10px] ml-1">Posting...</span>';
+        st.className = "grid-cell status-cell text-primary font-bold";
 
-        // পরের মিটারটি পাঠানোর আগে ১ সেকেন্ড (১০০০ মিলি-সেকেন্ড) অপেক্ষা করবে
-        if (i < queue.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
-        }
+        try {
+            // শুধুমাত্র রিকোয়েস্ট পাঠানো হচ্ছে
+            runTask({ 
+                action: 'FAST', 
+                userid: state.user.userid, 
+                password: state.user.password, 
+                meters: [item.data] 
+            }); 
+        } catch (err) { console.error("Post failed for", item.data.meterNo); }
+
+        // সামান্য গ্যাপ রাখা যাতে সার্ভার জ্যাম না হয়
+        if (i < queue.length - 1) await new Promise(r => setTimeout(r, 400));
     }
 
-    // সব রিকোয়েস্ট ট্রিগার হয়ে গেলে বাটন রিলিজ করে দেওয়া (রেসপন্স আসার আগেই)
-    setTimeout(() => {
-        setBtnLoading('postBtn', false);
-        fetchHistory(10);
-    }, 2000);
+    // ৩. ধাপ ২: সব পোস্ট শেষে হিস্ট্রি আপডেট করা (একবার)
+    setBtnLoading('postBtn', true, 'Updating History...');
+    await new Promise(r => setTimeout(r, 3000)); // সার্ভার প্রসেসিংয়ের জন্য ৩ সেকেন্ড অপেক্ষা
+    await fetchHistory(queue.length + 10); // পোস্ট করা মিটারের সমপরিমাণ ডাটা রিফ্রেশ করা
+
+    // ৪. ধাপ ৩: হিস্ট্রি ক্যাশ থেকে চেক করে স্ট্যাটাস আপডেট করা
+    setBtnLoading('postBtn', true, 'Checking Status...');
+    queue.forEach(item => {
+        const st = item.row.querySelector('.status-cell');
+        const meterNo = item.data.meterNo;
+        
+        // হিস্ট্রি ক্যাশে মিটারটি আছে কিনা চেক
+        const found = state.history.find(m => m.meterNo === meterNo);
+
+        if (found) {
+            st.innerHTML = '<i class="fa-solid fa-check"></i> Done';
+            st.className = "grid-cell status-cell text-green-500 font-bold";
+        } else {
+            st.innerHTML = '<i class="fa-solid fa-xmark"></i> Failed';
+            st.className = "grid-cell status-cell text-red-500 font-bold";
+        }
+    });
+
+    setBtnLoading('postBtn', false);
+    saveDraft();
 }
 
 // আলাদা ফাংশন যা প্রতিটি মিটারের রেজাল্ট হ্যান্ডেল করবে
