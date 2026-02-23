@@ -378,11 +378,11 @@ async function startPostingOneByOne() {
         } catch (err) { console.error("Post failed for", item.data.meterNo); }
 
         // সামান্য গ্যাপ রাখা যাতে সার্ভার জ্যাম না হয়
-        if (i < queue.length - 1) await new Promise(r => setTimeout(r, 400));
+        if (i < queue.length - 1) await new Promise(r => setTimeout(r, 1500));
     }
 
     // ৩. ধাপ ২: সব পোস্ট শেষে হিস্ট্রি আপডেট করা (একবার)
-    setBtnLoading('postBtn', true, 'Updating History...');
+    setBtnLoading('postBtn', true, 'Start Posting');
     await new Promise(r => setTimeout(r, 3000)); // সার্ভার প্রসেসিংয়ের জন্য ৩ সেকেন্ড অপেক্ষা
     await fetchHistory(queue.length + 10); // পোস্ট করা মিটারের সমপরিমাণ ডাটা রিফ্রেশ করা
 
@@ -421,7 +421,7 @@ async function verifyMeterInHistory(meterNo) {
     }
 
     // ধাপ ২: যদি লোকাল ক্যাশে না থাকে, তবে সার্ভার থেকে আপডেট করবে (সর্বোচ্চ ৩ বার ট্রাই)
-    for (let i = 0; i < 7; i++) {
+    for (let i = 0; i < 3; i++) {
         // প্রতিবার ১০০ বা তার বেশি ডাটা ফেচ করে চেক করবে
         const limit = 3 + (i * 5); 
         const latestList = await refreshHistory(limit);
