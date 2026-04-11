@@ -232,9 +232,53 @@
             {id:'601', name:'JFJ'}
         ];
 
+        // --- IndexedDB Setup ---
+        const DB_NAME = 'RebPbsDB', DB_VERSION = 1, STORE_NAME = 'history';
+        let db = null;
+
+        function openDB() {
+            return new Promise((resolve, reject) => {
+                const req = indexedDB.open(DB_NAME, DB_VERSION);
+                req.onupgradeneeded = e => {
+                    const store = e.target.result.createObjectStore(STORE_NAME, { keyPath: 'meterNo' });
+                    store.createIndex('date', 'date', { unique: false });
+                };
+                req.onsuccess = e => { db = e.target.result; resolve(db); };
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        function dbPutAll(records) {
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(STORE_NAME, 'readwrite');
+                const store = tx.objectStore(STORE_NAME);
+                records.forEach(r => store.put(r));
+                tx.oncomplete = resolve;
+                tx.onerror = () => reject(tx.error);
+            });
+        }
+
+        function dbGetAll() {
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(STORE_NAME, 'readonly');
+                const req = tx.objectStore(STORE_NAME).getAll();
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        function dbClear() {
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(STORE_NAME, 'readwrite');
+                tx.objectStore(STORE_NAME).clear();
+                tx.oncomplete = resolve;
+                tx.onerror = () => reject(tx.error);
+            });
+        }
+
         const state = {
             user: JSON.parse(localStorage.getItem('reb_user_v8')) || null,
-            history: JSON.parse(localStorage.getItem('reb_history_cache')) || [],
+            history: [],
             defaults: { 
                 manufacturerId: '581', meterType: 'j-39', bodySeal1: 'LS', bodySeal2: 'LS', 
                 initialReading: '0', kwhReading: '0', demandReading: '0',
@@ -285,7 +329,14 @@
             }
         }
 
-        document.addEventListener('DOMContentLoaded', () => {
+        document.addEventListener('DOMContentLoaded', async () => {
+            await openDB();
+            // Migrate old localStorage history to IndexedDB
+            const old = localStorage.getItem('reb_history_cache');
+            if (old) {
+                try { await dbPutAll(JSON.parse(old)); localStorage.removeItem('reb_history_cache'); } catch(e) {}
+            }
+            state.history = await dbGetAll();
             if(state.user) initApp();
             else document.getElementById('loginPage').classList.remove('hidden');
             loadSettings();
@@ -360,49 +411,11 @@ async function startPostingOneByOne() {
 
     setBtnLoading('postBtn', true, 'Posting...');
 
-    // ২. ধাপ ১: দ্রুত সব মিটার পোস্ট করা
+    // প্রতিটি মিটার স্বাধীনভাবে পোস্ট ও ভেরিফাই হবে
     for (let i = 0; i < queue.length; i++) {
-        const item = queue[i];
-        const st = item.row.querySelector('.status-cell');
-        st.innerHTML = '<span class="loader text-primary"></span> <span class="text-[10px] ml-1">Posting...</span>';
-        st.className = "grid-cell status-cell text-primary font-bold";
-
-        try {
-            // শুধুমাত্র রিকোয়েস্ট পাঠানো হচ্ছে
-            runTask({ 
-                action: 'FAST', 
-                userid: state.user.userid, 
-                password: state.user.password, 
-                meters: [item.data] 
-            }); 
-        } catch (err) { console.error("Post failed for", item.data.meterNo); }
-
-        // সামান্য গ্যাপ রাখা যাতে সার্ভার জ্যাম না হয়
-        if (i < queue.length - 1) await new Promise(r => setTimeout(r, 1500));
+        await sendMeterData(queue[i]);
+        if (i < queue.length - 1) await new Promise(r => setTimeout(r, 500));
     }
-
-    // ৩. ধাপ ২: সব পোস্ট শেষে হিস্ট্রি আপডেট করা (একবার)
-    setBtnLoading('postBtn', true, 'Start Posting');
-    await new Promise(r => setTimeout(r, 3000)); // সার্ভার প্রসেসিংয়ের জন্য ৩ সেকেন্ড অপেক্ষা
-    await fetchHistory(queue.length + 10); // পোস্ট করা মিটারের সমপরিমাণ ডাটা রিফ্রেশ করা
-
-    // ৪. ধাপ ৩: হিস্ট্রি ক্যাশ থেকে চেক করে স্ট্যাটাস আপডেট করা
-    setBtnLoading('postBtn', true, 'Checking Status...');
-    queue.forEach(item => {
-        const st = item.row.querySelector('.status-cell');
-        const meterNo = item.data.meterNo;
-        
-        // হিস্ট্রি ক্যাশে মিটারটি আছে কিনা চেক
-        const found = state.history.find(m => m.meterNo === meterNo);
-
-        if (found) {
-            st.innerHTML = '<i class="fa-solid fa-check"></i> Done';
-            st.className = "grid-cell status-cell text-green-500 font-bold";
-        } else {
-            st.innerHTML = '<i class="fa-solid fa-xmark"></i> Failed';
-            st.className = "grid-cell status-cell text-red-500 font-bold";
-        }
-    });
 
     setBtnLoading('postBtn', false);
     saveDraft();
@@ -414,28 +427,21 @@ async function startPostingOneByOne() {
 
 // ১. ইনভেন্টরি বা হিস্ট্রিতে মিটারটি আছে কিনা তা চেক করার মূল ফাংশন
 async function verifyMeterInHistory(meterNo) {
-    // ধাপ ১: প্রথমে লোকাল ক্যাশ (History Page এর ডাটা) চেক করবে
-    const localFound = state.history.find(m => m.meterNo === meterNo);
-    if (localFound) {
-        return true; // লোকাল হিস্ট্রিতে পাওয়া গেছে, তাই আর API কলের প্রয়োজন নেই
-    }
-
-    // ধাপ ২: যদি লোকাল ক্যাশে না থাকে, তবে সার্ভার থেকে আপডেট করবে (সর্বোচ্চ ৩ বার ট্রাই)
+    // সব সময় লোকাল state.history তে চেক হবে
+    // না পেলে server থেকে local আপডেট করে আবার local এ চেক — সর্বোচ্চ ৩ বার
     for (let i = 0; i < 3; i++) {
-        // প্রতিবার ১০০ বা তার বেশি ডাটা ফেচ করে চেক করবে
-        const limit = 3 + (i * 5); 
-        const latestList = await refreshHistory(limit);
-        
-        if (latestList) {
-            const serverFound = latestList.find(m => m.meterNo === meterNo);
-            if (serverFound) return true; 
-        }
-        
-        // ২ সেকেন্ড অপেক্ষা করে আবার চেক (সার্ভার প্রসেসিং টাইমের জন্য)
+        if (state.history.find(m => m.meterNo === meterNo)) return true;
+
+        // local এ নেই — server থেকে fetch করে local আপডেট করো
+        await refreshHistory(10 + (i * 10));
+
+        // ২ সেকেন্ড অপেক্ষা (server processing time)
         await new Promise(resolve => setTimeout(resolve, 2000));
     }
-    return false;
+    // শেষবার local চেক
+    return !!state.history.find(m => m.meterNo === meterNo);
 }
+
 
 // ২. মিটার ডেটা পাঠানোর মেইন ফাংশন
 async function sendMeterData(item) {
@@ -493,7 +499,7 @@ async function refreshHistory(limit = 3) {
         if(result && result.data) {
             // নতুন ডাটা ক্যাশে যোগ করা এবং ডুপ্লিকেট রিমুভ করা
             state.history = [...result.data, ...state.history.filter(h => !result.data.find(n => n.meterNo === h.meterNo))].slice(0, 1000);
-            localStorage.setItem('reb_history_cache', JSON.stringify(state.history));
+            await dbPutAll(result.data);
             renderHistory(); // হিস্ট্রি পেজ আপডেট
             return result.data;
         }
@@ -511,9 +517,9 @@ async function refreshHistory(limit = 3) {
 
 
         // --- UI Helpers (Same as original) ---
-        function updateHistoryCache(newData) {
+        async function updateHistoryCache(newData) {
             state.history = [...newData, ...state.history.filter(h => !newData.find(n => n.meterNo === h.meterNo))];
-            localStorage.setItem('reb_history_cache', JSON.stringify(state.history));
+            await dbPutAll(newData);
         }
 
         function renderHistory() {
@@ -583,7 +589,7 @@ async function refreshHistory(limit = 3) {
         function toggleHistorySettings() { document.getElementById('historySettingsModal').classList.toggle('hidden'); }
         function toggleSettingsModal() { document.getElementById('settingsModal').classList.toggle('hidden'); }
         async function manualSyncHistory() { setBtnLoading('syncBtn', true, 'Syncing'); await fetchHistory(parseInt(document.getElementById('syncLimitInput').value || 300)); setBtnLoading('syncBtn', false); document.getElementById('historySettingsModal').classList.add('hidden'); }
-        function clearHistoryCache() { if(confirm("Clear history?")) { state.history = []; localStorage.removeItem('reb_history_cache'); renderHistory(); } }
+        async function clearHistoryCache() { if(confirm("Clear history?")) { state.history = []; await dbClear(); renderHistory(); } }
         function getNextSealSequence() { const sealInputs = document.querySelectorAll('.inp-seal'); if(sealInputs.length === 0) return ''; const lastVal = sealInputs[sealInputs.length - 1].value.trim(); if(!lastVal) return ''; const match = lastVal.match(/(\d+)$/); if(match) { const nextNum = (parseInt(match[1], 10) + 1).toString().padStart(match[1].length, '0'); return lastVal.substring(0, match.index) + nextNum; } return lastVal; }
         function updateGlobalDefault(key, value) { state.defaults[key] = value; saveDraft(); }
         function loadSettings() { const settings = JSON.parse(localStorage.getItem('reb_settings')); if(settings) { for(const key in settings) { const el = document.getElementById(`tog-${key}`); if(el) el.checked = settings[key]; } updateColumns(); } }
